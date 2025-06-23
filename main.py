@@ -11,6 +11,20 @@ from att_lstm_module import ATTLSTMModel
 import matplotlib.pyplot as plt
 import os
 import time # Import time module for performance testing
+import json # Import json module for saving metrics
+
+# Custom JSON Encoder for NumPy types
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, pd.Timestamp): # Handle pandas Timestamp if it appears
+            return obj.isoformat()
+        return super(NumpyEncoder, self).default(obj)
 
 # --- Module 5: Integrate and Test the Full Model ---
 
@@ -622,7 +636,7 @@ if __name__ == '__main__':
                         else:
                             serializable_metrics[k] = v
                     serializable_results[run_key] = serializable_metrics
-                pd.io.json.dump(serializable_results, f, indent=4) # Use pandas json dump for better handling of numpy types potentially
+                json.dump(serializable_results, f, indent=4, cls=NumpyEncoder) # Use custom encoder
             print(f"\nAll experimental run metrics saved to: {results_json_path}")
         except Exception as e:
             print(f"Error saving metrics to JSON: {e}")
