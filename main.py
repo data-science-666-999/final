@@ -11,6 +11,7 @@ from att_lstm_module import ATTLSTMModel
 import matplotlib.pyplot as plt
 import os
 import time # Import time module for performance testing
+import json # Import standard json library
 
 # --- Module 5: Integrate and Test the Full Model ---
 
@@ -615,9 +616,13 @@ if __name__ == '__main__':
                         if k == 'selected_features_names' and isinstance(v, list):
                             serializable_metrics[k] = ", ".join(v)
                         else:
-                            serializable_metrics[k] = v
+                            # Ensure numpy types are converted for JSON serialization
+                            if hasattr(v, 'item'): # Check if it's a numpy type
+                                serializable_metrics[k] = v.item()
+                            else:
+                                serializable_metrics[k] = v
                     serializable_results[run_key] = serializable_metrics
-                pd.io.json.dump(serializable_results, f, indent=4) # Use pandas json dump for better handling of numpy types potentially
+                json.dump(serializable_results, f, indent=4) # Use standard json.dump
             print(f"\nAll experimental run metrics saved to: {results_json_path}")
         except Exception as e:
             print(f"Error saving metrics to JSON: {e}")
