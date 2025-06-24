@@ -6,6 +6,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 # Import modules
 from data_preprocessing_module import DataPreprocessor
 from att_lstm_module import ATTLSTMModel
+from standard_lstm_module import StandardLSTMModel # Added import
 # from nsgm1n_module import NSGM1NModel # Removed
 # from ensemble_module import EnsembleModel # Removed
 import matplotlib.pyplot as plt
@@ -16,23 +17,24 @@ import json # Import standard json library
 # --- Module 5: Integrate and Test the Full Model ---
 
 class FullStockPredictionModel:
-    def __init__(self, stock_ticker="AEL", years_of_data=10, look_back=60, random_seed=42, lasso_alpha=0.005, use_differencing=False):
+    def __init__(self, stock_ticker="AEL", years_of_data=10, look_back=60, random_seed=42, lasso_alpha=0.005, use_differencing=False, model_type="att_lstm"): # Added model_type
         self.stock_ticker = stock_ticker
         self.years_of_data = years_of_data
         self.look_back = look_back
         self.random_seed = random_seed
         self.lasso_alpha = lasso_alpha
-        self.use_differencing = use_differencing # Store differencing choice
+        self.use_differencing = use_differencing
+        self.model_type = model_type # Store model_type
 
         self.data_preprocessor = DataPreprocessor(
             stock_ticker=self.stock_ticker,
             years_of_data=self.years_of_data,
             random_seed=self.random_seed,
             lasso_alpha=self.lasso_alpha,
-            use_differencing=self.use_differencing # Pass to DataPreprocessor
+            use_differencing=self.use_differencing
         )
-        self.att_lstm_model = None
-        self.target_scaler = None # Scaler for the target variable
+        self.current_model = None # Generic model placeholder
+        self.target_scaler = None
         self.processed_df = None
         self.selected_features = None
         self.df_all_indicators = None
@@ -88,8 +90,8 @@ class FullStockPredictionModel:
             print(f"Differencing was used. First price before diff: {self.first_price_before_diff}")
 
         # --- Create unique directory for this run's plots ---
-        # Use relevant parameters to name the directory for clarity
-        run_specific_plot_dir_name = f"alpha_{self.lasso_alpha}_diff_{self.use_differencing}_lb_{self.look_back}_yrs_{self.years_of_data}"
+        # Use relevant parameters to name the directory for clarity, including model_type
+        run_specific_plot_dir_name = f"model_{self.model_type}_alpha_{self.lasso_alpha}_diff_{self.use_differencing}_lb_{self.look_back}_yrs_{self.years_of_data}"
         self.plots_dir_path = os.path.join("performance_evaluation_report", run_specific_plot_dir_name)
         os.makedirs(self.plots_dir_path, exist_ok=True)
         print(f"Plots for this run will be saved to: {os.path.abspath(self.plots_dir_path)}")
@@ -148,79 +150,87 @@ class FullStockPredictionModel:
         # The look_back used here should also correspond to the one that yielded the best HPs.
         # For now, we'll keep the existing look_back from the class instance.
         # A more advanced setup would load these from a file saved by the tuning script.
-        # Best Hyperparameters for 60-day look-back from tuning:
-        # num_lstm_layers: 1, lstm_units_0: 160, num_dense_layers: 1, dense_units_0: 96,
-        # learning_rate: 0.001, dropout_rate_lstm: 0.2, dropout_rate_dense: 0.1, activation_dense: 'tanh'
-        tuned_best_hps = {
-            'num_lstm_layers': 1,
-            'lstm_units_1': 160,        # Renamed from lstm_units_0 for consistency with model_params structure
-            # 'lstm_units_2': 100,      # Not applicable as num_lstm_layers is 1
-            'num_dense_layers': 1,
-            'dense_units_1': 96,         # Renamed from dense_units_0
-            # 'dense_units_2': 50,        # Not applicable as num_dense_layers is 1
-            'learning_rate': 0.001,
-            'dropout_rate_lstm': 0.2,
-            'dropout_rate_dense': 0.1,
-            'activation_dense': 'tanh'
-        }
-        # TODO: Load actual best HPs from the tuning script's output when available.
-        # For now, using these placeholders.
-        print(f"\n--- Using Tuned Hyperparameters for ATT-LSTM (Look-back 60 days) ---")
-        for key, value in tuned_best_hps.items():
+
+        input_shape_model = (X_train_seq.shape[1], X_train_seq.shape[2]) # (timesteps, features)
+        model_hps = {}
+
+        if self.model_type == "att_lstm":
+            # Best Hyperparameters for ATT-LSTM (60-day look-back from tuning)
+            model_hps = {
+                'num_lstm_layers': 1, 'lstm_units_1': 160,
+                'num_dense_layers': 1, 'dense_units_1': 96,
+                'learning_rate': 0.001, 'dropout_rate_lstm': 0.2,
+                'dropout_rate_dense': 0.1, 'activation_dense': 'tanh'
+            }
+            print(f"\n--- Using Tuned Hyperparameters for ATT-LSTM (Look-back {self.look_back} days) ---")
+            self.current_model = ATTLSTMModel(
+                input_shape=input_shape_model,
+                look_back=self.look_back,
+                random_seed=self.random_seed,
+                model_params=model_hps
+            )
+        elif self.model_type == "standard_lstm":
+            # Default/Example Hyperparameters for Standard LSTM
+            # These should ideally be tuned as well.
+            model_hps = {
+                'num_lstm_layers': 1, 'lstm_units_1': 100, # Example: 1 LSTM layer with 100 units
+                'num_dense_layers': 1, 'dense_units_1': 50,  # Example: 1 Dense layer with 50 units
+                'learning_rate': 0.001, 'dropout_rate_lstm': 0.1,
+                'dropout_rate_dense': 0.1, 'activation_dense': 'relu'
+            }
+            print(f"\n--- Using Default Hyperparameters for Standard LSTM (Look-back {self.look_back} days) ---")
+            self.current_model = StandardLSTMModel(
+                input_shape=input_shape_model,
+                look_back=self.look_back,
+                random_seed=self.random_seed,
+                model_params=model_hps
+            )
+        else:
+            raise ValueError(f"Unsupported model_type: {self.model_type}")
+
+        for key, value in model_hps.items():
             print(f"  {key}: {value}")
         print("------------------------------------------------------------")
-        print(f"--- Final Training Parameters for ATT-LSTM ---")
+        print(f"--- Final Training Parameters for {self.model_type.upper()} ---")
         print(f"  Epochs: {epochs}")
         print(f"  Batch Size: {batch_size}")
-        print(f"  Look_back: {self.look_back}") # Display the look_back being used
+        print(f"  Look_back: {self.look_back}")
         print("------------------------------------------------------------")
 
-        input_shape_lstm = (X_train_seq.shape[1], X_train_seq.shape[2]) # (timesteps, features)
-
-        # Instantiate ATTLSTMModel with the tuned HPs
-        self.att_lstm_model = ATTLSTMModel(
-            input_shape=input_shape_lstm,
-            look_back=self.look_back, # This look_back should align with the one used for tuning
-            random_seed=self.random_seed,
-            model_params=tuned_best_hps # Pass the dictionary here
-        )
-
-        # Build the model using these parameters
-        self.att_lstm_model.build_model() # Since hp=None, it will use model_params
+        # Build the selected model
+        self.current_model.build_model() # Since hp=None, it will use model_params from constructor
 
         # Train the model
-        print("Starting ATT-LSTM Model Training...")
+        print(f"Starting {self.model_type.upper()} Model Training...")
         model_training_start_time = time.time()
-        history = self.att_lstm_model.train(
+        history = self.current_model.train(
             X_train_seq, y_train_seq, X_val_seq, y_val_seq,
             epochs=epochs, batch_size=batch_size
         )
         model_training_end_time = time.time()
         metrics_log['model_training_time_seconds'] = model_training_end_time - model_training_start_time
-        print(f"ATT-LSTM Model Training completed in {metrics_log['model_training_time_seconds']:.2f} seconds.")
+        print(f"{self.model_type.upper()} Model Training completed in {metrics_log['model_training_time_seconds']:.2f} seconds.")
         if history and 'val_loss' in history.history:
             metrics_log['final_val_loss'] = history.history['val_loss'][-1]
             metrics_log['best_val_loss'] = min(history.history['val_loss'])
             metrics_log['epochs_trained'] = len(history.history['val_loss'])
 
-
-        # Predict on test set for LSTM
-        print("Starting predictions on test set...")
+        # Predict on test set
+        print(f"Starting predictions on test set with {self.model_type.upper()} model...")
         prediction_start_time = time.time()
-        att_lstm_test_preds_scaled = self.att_lstm_model.predict(X_test_seq).flatten()
+        model_test_preds_scaled = self.current_model.predict(X_test_seq).flatten()
         prediction_end_time = time.time()
         metrics_log['test_set_prediction_time_seconds'] = prediction_end_time - prediction_start_time
         print(f"Test set prediction completed in {metrics_log['test_set_prediction_time_seconds']:.2f} seconds.")
 
         # Inverse transform predictions and actual values to original scale
-
         # The target_scaler is now specific to the target column.
         # We need to reshape predictions and actuals to be 2D for the scaler.
-        att_lstm_test_preds_scaled_2d = att_lstm_test_preds_scaled.reshape(-1, 1)
+        model_test_preds_scaled_2d = model_test_preds_scaled.reshape(-1, 1)
         y_test_seq_2d = y_test_seq.reshape(-1, 1)
 
         # Inverse scale the predictions and actuals (which are potentially differenced and scaled)
-        inv_scaled_preds = self.target_scaler.inverse_transform(att_lstm_test_preds_scaled_2d).flatten()
+        inv_scaled_preds = self.target_scaler.inverse_transform(model_test_preds_scaled_2d).flatten()
         inv_scaled_actuals = self.target_scaler.inverse_transform(y_test_seq_2d).flatten()
 
         if self.use_differencing:
@@ -284,48 +294,60 @@ class FullStockPredictionModel:
                 raise ValueError("Cannot get previous day price for inverse differencing: first test sample is the first data point.")
             price_before_first_pred = self.df_all_indicators[self.actual_target_column_name_for_inv_transform].iloc[first_test_date_index_loc - 1]
 
-            original_att_lstm_test_preds = price_before_first_pred + np.cumsum(inv_scaled_preds)
-            original_y_test_seq = price_before_first_pred + np.cumsum(inv_scaled_actuals)
-            print(f"  Reconstructed first actual price: {original_y_test_seq[0]:.2f} (from {price_before_first_pred:.2f} + {inv_scaled_actuals[0]:.2f})")
-            print(f"  Reconstructed first predicted price: {original_att_lstm_test_preds[0]:.2f} (from {price_before_first_pred:.2f} + {inv_scaled_preds[0]:.2f})")
+            original_model_test_preds = price_before_first_pred + np.cumsum(inv_scaled_preds)
+            original_y_test_actuals = price_before_first_pred + np.cumsum(inv_scaled_actuals)
+            print(f"  Reconstructed first actual price: {original_y_test_actuals[0]:.2f} (from {price_before_first_pred:.2f} + {inv_scaled_actuals[0]:.2f})")
+            print(f"  Reconstructed first predicted price: {original_model_test_preds[0]:.2f} (from {price_before_first_pred:.2f} + {inv_scaled_preds[0]:.2f})")
 
         else: # No differencing was used
-            original_att_lstm_test_preds = inv_scaled_preds
-            original_y_test_seq = inv_scaled_actuals
+            original_model_test_preds = inv_scaled_preds
+            original_y_test_actuals = inv_scaled_actuals
 
         # Evaluate performance
-        print("\n--- Model Performance on Test Set (Original Scale) ---")
-        residuals_lstm = original_y_test_seq - original_att_lstm_test_preds
+        print(f"\n--- {self.model_type.upper()} Model Performance on Test Set (Original Scale) ---")
+        residuals_model = original_y_test_actuals - original_model_test_preds
 
         # Overall Metrics
-        metrics_log["overall_mse"] = mean_squared_error(original_y_test_seq, original_att_lstm_test_preds)
-        metrics_log["overall_mae"] = mean_absolute_error(original_y_test_seq, original_att_lstm_test_preds)
+        metrics_log["overall_mse"] = mean_squared_error(original_y_test_actuals, original_model_test_preds)
+        metrics_log["overall_mae"] = mean_absolute_error(original_y_test_actuals, original_model_test_preds)
         metrics_log["overall_rmse"] = np.sqrt(metrics_log["overall_mse"])
 
-        mean_actuals = np.mean(original_y_test_seq)
-        if mean_actuals == 0:
+        mean_actuals = np.mean(original_y_test_actuals)
+        if mean_actuals == 0: # Avoid division by zero
             metrics_log["overall_rmse_perc_mean"] = float('inf')
             metrics_log["overall_mape"] = float('inf') # Mean Absolute Percentage Error
         else:
             metrics_log["overall_rmse_perc_mean"] = (metrics_log["overall_rmse"] / mean_actuals) * 100
-            metrics_log["overall_mape"] = np.mean(np.abs(residuals_lstm / original_y_test_seq)) * 100
+            # MAPE calculation needs to handle cases where original_y_test_actuals can be zero
+            # To avoid division by zero in MAPE for individual elements:
+            # Replace zeros in original_y_test_actuals with a very small number (epsilon) or filter them out.
+            # For simplicity, let's filter out zeros for MAPE calculation.
+            non_zero_actuals_mask = original_y_test_actuals != 0
+            if np.sum(non_zero_actuals_mask) > 0:
+                metrics_log["overall_mape"] = np.mean(np.abs(residuals_model[non_zero_actuals_mask] / original_y_test_actuals[non_zero_actuals_mask])) * 100
+            else:
+                metrics_log["overall_mape"] = float('inf') # Or np.nan, if all actuals are zero
 
         # Bias Metrics
-        metrics_log["bias_me"] = np.mean(residuals_lstm) # Mean Error
-        if mean_actuals == 0:
+        metrics_log["bias_me"] = np.mean(residuals_model) # Mean Error
+        if mean_actuals == 0: # Avoid division by zero
             metrics_log["bias_mpe"] = float('inf') # Mean Percentage Error
         else:
-            metrics_log["bias_mpe"] = np.mean(residuals_lstm / original_y_test_seq) * 100
+            if np.sum(non_zero_actuals_mask) > 0:
+                metrics_log["bias_mpe"] = np.mean(residuals_model[non_zero_actuals_mask] / original_y_test_actuals[non_zero_actuals_mask]) * 100
+            else:
+                metrics_log["bias_mpe"] = float('inf')
 
-        print(f"ATT-LSTM - Overall MSE: {metrics_log['overall_mse']:.4f}, MAE: {metrics_log['overall_mae']:.4f}, RMSE: {metrics_log['overall_rmse']:.4f}")
-        print(f"ATT-LSTM - Overall RMSE as % of Mean Actuals: {metrics_log['overall_rmse_perc_mean']:.2f}%")
-        print(f"ATT-LSTM - Overall MAPE: {metrics_log['overall_mape']:.2f}%")
-        print(f"ATT-LSTM - Bias (Mean Error): {metrics_log['bias_me']:.4f}")
-        print(f"ATT-LSTM - Bias (Mean Percentage Error): {metrics_log['bias_mpe']:.2f}%")
+
+        print(f"{self.model_type.upper()} - Overall MSE: {metrics_log['overall_mse']:.4f}, MAE: {metrics_log['overall_mae']:.4f}, RMSE: {metrics_log['overall_rmse']:.4f}")
+        print(f"{self.model_type.upper()} - Overall RMSE as % of Mean Actuals: {metrics_log['overall_rmse_perc_mean']:.2f}%")
+        print(f"{self.model_type.upper()} - Overall MAPE: {metrics_log['overall_mape']:.2f}%")
+        print(f"{self.model_type.upper()} - Bias (Mean Error): {metrics_log['bias_me']:.4f}")
+        print(f"{self.model_type.upper()} - Bias (Mean Percentage Error): {metrics_log['bias_mpe']:.2f}%")
 
         # Volatility-Specific Performance
         # Ensure self.df_all_indicators and 'ATR' column exist and are properly aligned with test_indices
-        test_indices = self.processed_df.index[-len(original_y_test_seq):] # Get indices for the test set from processed_df
+        test_indices = self.processed_df.index[-len(original_y_test_actuals):] # Get indices for the test set from processed_df
 
         if self.df_all_indicators is not None and 'ATR' in self.df_all_indicators.columns:
             # Align ATR data with the test set
@@ -339,7 +361,7 @@ class FullStockPredictionModel:
             else:
                 aligned_atr = atr_series_full.loc[test_indices]
 
-            if not aligned_atr.empty and len(aligned_atr) == len(original_y_test_seq):
+            if not aligned_atr.empty and len(aligned_atr) == len(original_y_test_actuals):
                 low_vol_threshold = aligned_atr.quantile(0.25)
                 high_vol_threshold = aligned_atr.quantile(0.75)
 
@@ -349,12 +371,12 @@ class FullStockPredictionModel:
 
                 for period_name, mask in zip(["low_vol", "mid_vol", "high_vol"], [low_vol_mask, mid_vol_mask, high_vol_mask]):
                     if np.sum(mask) > 0:
-                        metrics_log[f"{period_name}_mse"] = mean_squared_error(original_y_test_seq[mask], original_att_lstm_test_preds[mask])
-                        metrics_log[f"{period_name}_mae"] = mean_absolute_error(original_y_test_seq[mask], original_att_lstm_test_preds[mask])
+                        metrics_log[f"{period_name}_mse"] = mean_squared_error(original_y_test_actuals[mask], original_model_test_preds[mask])
+                        metrics_log[f"{period_name}_mae"] = mean_absolute_error(original_y_test_actuals[mask], original_model_test_preds[mask])
                         metrics_log[f"{period_name}_rmse"] = np.sqrt(metrics_log[f"{period_name}_mse"])
-                        print(f"ATT-LSTM - {period_name.replace('_', ' ').title()} - MSE: {metrics_log[f'{period_name}_mse']:.4f}, MAE: {metrics_log[f'{period_name}_mae']:.4f}, RMSE: {metrics_log[f'{period_name}_rmse']:.4f} (Samples: {np.sum(mask)})")
+                        print(f"{self.model_type.upper()} - {period_name.replace('_', ' ').title()} - MSE: {metrics_log[f'{period_name}_mse']:.4f}, MAE: {metrics_log[f'{period_name}_mae']:.4f}, RMSE: {metrics_log[f'{period_name}_rmse']:.4f} (Samples: {np.sum(mask)})")
                     else:
-                        print(f"ATT-LSTM - No samples for {period_name.replace('_', ' ').title()} period.")
+                        print(f"{self.model_type.upper()} - No samples for {period_name.replace('_', ' ').title()} period.")
                         metrics_log[f"{period_name}_mse"] = np.nan
                         metrics_log[f"{period_name}_mae"] = np.nan
                         metrics_log[f"{period_name}_rmse"] = np.nan
@@ -369,25 +391,26 @@ class FullStockPredictionModel:
         print(f"Attempting to save plots to: {os.path.abspath(self.plots_dir_path)}")
 
         try:
+            model_name_for_plot = self.model_type.upper()
             self._plot_predictions_vs_actuals_timeseries(
-                test_indices, original_y_test_seq, original_att_lstm_test_preds,
-                "ATT-LSTM Model Predictions vs Actuals",
-                os.path.join(self.plots_dir_path, "full_run_att_lstm_preds_vs_actuals_timeseries.png")
+                test_indices, original_y_test_actuals, original_model_test_preds,
+                f"{model_name_for_plot} Model Predictions vs Actuals",
+                os.path.join(self.plots_dir_path, f"full_run_{self.model_type}_preds_vs_actuals_timeseries.png")
             )
             self._plot_predictions_vs_actuals_scatter(
-                original_y_test_seq, original_att_lstm_test_preds,
-                "ATT-LSTM Model Predictions vs Actuals (Scatter)",
-                os.path.join(self.plots_dir_path, "full_run_att_lstm_preds_vs_actuals_scatter.png")
+                original_y_test_actuals, original_model_test_preds,
+                f"{model_name_for_plot} Model Predictions vs Actuals (Scatter)",
+                os.path.join(self.plots_dir_path, f"full_run_{self.model_type}_preds_vs_actuals_scatter.png")
             )
             self._plot_residuals_timeseries(
-                test_indices, residuals_lstm,
-                "ATT-LSTM Model Residuals Over Time",
-                os.path.join(self.plots_dir_path, "full_run_att_lstm_residuals_timeseries.png")
+                test_indices, residuals_model,
+                f"{model_name_for_plot} Model Residuals Over Time",
+                os.path.join(self.plots_dir_path, f"full_run_{self.model_type}_residuals_timeseries.png")
             )
             self._plot_residuals_histogram(
-                residuals_lstm,
-                "ATT-LSTM Model Distribution of Residuals",
-                os.path.join(self.plots_dir_path, "full_run_att_lstm_residuals_histogram.png")
+                residuals_model,
+                f"{model_name_for_plot} Model Distribution of Residuals",
+                os.path.join(self.plots_dir_path, f"full_run_{self.model_type}_residuals_histogram.png")
             )
             # Call the new volatility performance plot
             if metrics_log: # Ensure metrics_log is available
@@ -401,12 +424,12 @@ class FullStockPredictionModel:
 
         # Return all collected metrics along with predictions and actuals
         return {
-            "att_lstm_preds": original_att_lstm_test_preds,
-            "actual_values": original_y_test_seq,
+            "model_preds": original_model_test_preds, # Generic name
+            "actual_values": original_y_test_actuals, # Generic name
             "metrics": metrics_log # Return the comprehensive metrics dictionary
         }
 
-    def _plot_volatility_performance_comparison(self, metrics_log, base_filename="volatility_performance_comparison.png"):
+    def _plot_volatility_performance_comparison(self, metrics_log, base_filename_suffix="volatility_performance_comparison.png"):
         """Plots a bar chart comparing performance metrics across volatility periods."""
         periods = ["low_vol", "mid_vol", "high_vol"]
         metrics_to_plot = ["rmse", "mae"] # Can extend to other metrics like mse
@@ -437,11 +460,12 @@ class FullStockPredictionModel:
                 yval = bar.get_height()
                 plt.text(bar.get_x() + bar.get_width()/2.0, yval + 0.01 * max(values, default=0), f'{yval:.2f}', ha='center', va='bottom')
 
-            filename = os.path.join(self.plots_dir_path, f"{metric_name}_" + base_filename) # self.plots_dir_path needs to be set
+            # Add model_type to filename
+            filename = os.path.join(self.plots_dir_path, f"{self.model_type}_{metric_name}_" + base_filename_suffix)
             plt.tight_layout()
             plt.savefig(filename)
             plt.close()
-            print(f"Volatility performance comparison plot ({metric_name}) saved to {filename}")
+            print(f"Volatility performance comparison plot ({metric_name}) for {self.model_type.upper()} saved to {filename}")
 
 
     # --- Plotting Helper Methods ---
@@ -513,80 +537,86 @@ if __name__ == '__main__':
     lasso_alpha_values_to_test = [0.005, 0.01] # Reduced set for quicker tests
     # To run a single test with a specific alpha:
     # lasso_alpha_values_to_test = [0.005]
+    model_types_to_test = ["att_lstm", "standard_lstm"] # Added model types to test
 
     all_run_results = {}
     results_df_list = [] # For creating a summary DataFrame
 
     print(f"--- Starting Experimental Runs ---")
     print(f"Stock: {run_stock_ticker}, Years: {run_years_of_data}, Look_back: {run_look_back}, Epochs: {run_epochs}, Differencing: {run_use_differencing}")
+    print(f"Model Types to Test: {model_types_to_test}")
 
-    for alpha_val in lasso_alpha_values_to_test:
-        print(f"\n--- Running Experiment with LASSO alpha: {alpha_val}, Differencing: {run_use_differencing} ---")
+    for model_type_val in model_types_to_test: # Loop through model types
+        for alpha_val in lasso_alpha_values_to_test: # Loop through alpha values
+            print(f"\n--- Running Experiment with Model: {model_type_val.upper()}, LASSO alpha: {alpha_val}, Differencing: {run_use_differencing} ---")
 
-        # Create a unique ID for this run configuration for storing results
-        run_id = f"alpha_{alpha_val}_diff_{run_use_differencing}_lb_{run_look_back}_yrs_{run_years_of_data}"
+            # Create a unique ID for this run configuration for storing results
+            run_id = f"model_{model_type_val}_alpha_{alpha_val}_diff_{run_use_differencing}_lb_{run_look_back}_yrs_{run_years_of_data}"
 
-        full_model_instance = FullStockPredictionModel(
-            stock_ticker=run_stock_ticker,
-            years_of_data=run_years_of_data,
-            look_back=run_look_back,
-            random_seed=42,
-            lasso_alpha=alpha_val,
-            use_differencing=run_use_differencing
-        )
+            full_model_instance = FullStockPredictionModel(
+                stock_ticker=run_stock_ticker,
+                years_of_data=run_years_of_data,
+                look_back=run_look_back,
+                random_seed=42,
+                lasso_alpha=alpha_val,
+                use_differencing=run_use_differencing,
+                model_type=model_type_val # Pass model_type here
+            )
 
-        run_start_time = time.time()
-        # The train_and_evaluate method uses the HPs defined within its scope
-        # (currently placeholders, ideally loaded based on tuned look_back)
-        current_run_results = full_model_instance.train_and_evaluate(
-            epochs=run_epochs,
-            batch_size=run_batch_size
-            # test_size and val_size use defaults in train_and_evaluate
-        )
-        run_end_time = time.time()
-        run_duration = run_end_time - run_start_time
-        print(f"--- Experiment with {run_id} Took: {run_duration:.2f} seconds ---")
+            run_start_time = time.time()
+            # The train_and_evaluate method uses the HPs defined within its scope
+            # (currently placeholders, ideally loaded based on tuned look_back)
+            current_run_results = full_model_instance.train_and_evaluate(
+                epochs=run_epochs,
+                batch_size=run_batch_size
+                # test_size and val_size use defaults in train_and_evaluate
+            )
+            run_end_time = time.time()
+            run_duration = run_end_time - run_start_time
+            print(f"--- Experiment with {run_id} Took: {run_duration:.2f} seconds ---")
 
-        if current_run_results and "metrics" in current_run_results:
-            all_run_results[run_id] = current_run_results["metrics"]
+            if current_run_results and "metrics" in current_run_results:
+                all_run_results[run_id] = current_run_results["metrics"]
 
-            # Prepare data for DataFrame summary
-            summary_data = {
-                "run_id": run_id,
-                "lasso_alpha": alpha_val,
-                "differencing": run_use_differencing,
-                "look_back": run_look_back,
-                "years_data": run_years_of_data,
-                **current_run_results["metrics"] # Unpack all metrics
-            }
-            results_df_list.append(summary_data)
+                # Prepare data for DataFrame summary
+                summary_data = {
+                    "run_id": run_id,
+                    "model_type": model_type_val, # Added model_type to summary
+                    "lasso_alpha": alpha_val,
+                    "differencing": run_use_differencing,
+                    "look_back": run_look_back,
+                    "years_data": run_years_of_data,
+                    **current_run_results["metrics"] # Unpack all metrics
+                }
+                results_df_list.append(summary_data)
 
-            print(f"  Key Metrics for {run_id}:")
-            print(f"    RMSE: {current_run_results['metrics'].get('overall_rmse', 'N/A'):.4f}")
-            print(f"    MAPE: {current_run_results['metrics'].get('overall_mape', 'N/A'):.2f}%")
-            print(f"    Bias (ME): {current_run_results['metrics'].get('bias_me', 'N/A'):.4f}")
-            print(f"    Selected Features: {current_run_results['metrics'].get('selected_features_count', 'N/A')}")
+                print(f"  Key Metrics for {run_id}:")
+                print(f"    RMSE: {current_run_results['metrics'].get('overall_rmse', 'N/A'):.4f}")
+                print(f"    MAPE: {current_run_results['metrics'].get('overall_mape', 'N/A'):.2f}%")
+                print(f"    Bias (ME): {current_run_results['metrics'].get('bias_me', 'N/A'):.4f}")
+                print(f"    Selected Features: {current_run_results['metrics'].get('selected_features_count', 'N/A')}")
 
-            # Production readiness testing (prediction speed)
-            if hasattr(full_model_instance, 'att_lstm_model') and full_model_instance.att_lstm_model and \
-               hasattr(full_model_instance.att_lstm_model, 'model') and full_model_instance.att_lstm_model.model is not None:
-                if full_model_instance.processed_df is not None and not full_model_instance.processed_df.empty:
-                    num_features = full_model_instance.processed_df.shape[1]
-                    sample_raw_data = np.random.rand(full_model_instance.look_back, num_features).astype(np.float32)
-                    single_instance_input = np.expand_dims(sample_raw_data, axis=0)
-                    _ = full_model_instance.att_lstm_model.predict(single_instance_input) # Warm-up
+                # Production readiness testing (prediction speed)
+                # Adjusted to use self.current_model for prediction speed test
+                if hasattr(full_model_instance, 'current_model') and full_model_instance.current_model and \
+                   hasattr(full_model_instance.current_model, 'model') and full_model_instance.current_model.model is not None:
+                    if full_model_instance.processed_df is not None and not full_model_instance.processed_df.empty:
+                        num_features = full_model_instance.processed_df.shape[1]
+                        sample_raw_data = np.random.rand(full_model_instance.look_back, num_features).astype(np.float32)
+                        single_instance_input = np.expand_dims(sample_raw_data, axis=0)
+                        _ = full_model_instance.current_model.predict(single_instance_input) # Warm-up
 
-                    single_pred_times = [time.time() for _ in range(10)]
-                    for i in range(10):
-                        _ = full_model_instance.att_lstm_model.predict(single_instance_input)
-                        single_pred_times[i] = time.time() - single_pred_times[i]
-                    avg_single_pred_time_ms = np.mean(single_pred_times) * 1000
-                    all_run_results[run_id]["latency_single_pred_ms"] = avg_single_pred_time_ms
-                    results_df_list[-1]["latency_single_pred_ms"] = avg_single_pred_time_ms # Add to df list
-                    print(f"    Avg Single Prediction Time: {avg_single_pred_time_ms:.2f} ms")
-        else:
-            print(f"  Run {run_id} did not produce results or metrics.")
-        print(f"--- End of Experiment for {run_id} ---")
+                        single_pred_times = [time.time() for _ in range(10)]
+                        for i in range(10):
+                            _ = full_model_instance.current_model.predict(single_instance_input)
+                            single_pred_times[i] = time.time() - single_pred_times[i]
+                        avg_single_pred_time_ms = np.mean(single_pred_times) * 1000
+                        all_run_results[run_id]["latency_single_pred_ms"] = avg_single_pred_time_ms
+                        results_df_list[-1]["latency_single_pred_ms"] = avg_single_pred_time_ms # Add to df list
+                        print(f"    Avg Single Prediction Time: {avg_single_pred_time_ms:.2f} ms")
+            else:
+                print(f"  Run {run_id} did not produce results or metrics.")
+            print(f"--- End of Experiment for {run_id} ---")
 
     print("\n\n--- Summary of All Experimental Runs (Console) ---")
     if all_run_results:
@@ -603,6 +633,8 @@ if __name__ == '__main__':
 
     # --- Save all_run_results to a JSON file and DataFrame to CSV ---
     if all_run_results:
+        print(f"\nDEBUG: Keys in all_run_results before saving: {list(all_run_results.keys())}")
+        print(f"DEBUG: Length of results_df_list before saving: {len(results_df_list)}")
         # Save to JSON
         results_json_path = os.path.join("performance_evaluation_report", "all_experimental_run_metrics.json")
         os.makedirs("performance_evaluation_report", exist_ok=True)
