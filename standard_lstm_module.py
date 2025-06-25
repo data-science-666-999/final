@@ -37,32 +37,49 @@ class StandardLSTMModel:
 
     def build_model(self, hp=None): # Accept hp object for potential tuning
         if hp: # Use hyperparameters from tuner if provided
-            num_lstm_layers = hp.Int('num_lstm_layers', min_value=1, max_value=2, step=1)
-            lstm_units_1 = hp.Int('lstm_units_1', min_value=32, max_value=256, step=32)
-            if num_lstm_layers > 1:
-                lstm_units_2 = hp.Int('lstm_units_2', min_value=32, max_value=128, step=32)
+            # Learning Rate
+            learning_rate = hp.Float('learning_rate', min_value=1e-5, max_value=1e-2, sampling='log')
 
-            num_dense_layers = hp.Int('num_dense_layers', min_value=1, max_value=2, step=1) # Allowing up to 2 dense layers
-            dense_units_1 = hp.Int('dense_units_1', min_value=16, max_value=128, step=16)
-            if num_dense_layers > 1:
-                 dense_units_2 = hp.Int('dense_units_2', min_value=16, max_value=64, step=16)
+            # LSTM Layer Configuration
+            num_lstm_layers = hp.Int('num_lstm_layers', min_value=1, max_value=4, step=1) # Max 3-4 as per plan
+            lstm_units_list = [] # Renamed to avoid conflict with potential hp name 'lstm_units'
+            for i in range(num_lstm_layers):
+                max_units = 512 if i == 0 else (256 if i == 1 else (128 if i == 2 else 64))
+                min_units = 32
+                step_units = 32
+                current_max_units = max(min_units, max_units)
+                lstm_units_list.append(hp.Int(f'lstm_units_{i+1}', min_value=min_units, max_value=current_max_units, step=step_units))
 
-
-            learning_rate = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='log')
             dropout_rate_lstm = hp.Float('dropout_rate_lstm', min_value=0.0, max_value=0.5, step=0.1)
+
+            # Dense Layer Configuration
+            num_dense_layers = hp.Int('num_dense_layers', min_value=1, max_value=3, step=1)
+            dense_units_list = [] # Renamed
+            for i in range(num_dense_layers):
+                max_units_dense = 256 if i == 0 else (128 if i == 1 else 64)
+                min_units_dense = 32
+                step_units_dense = 32
+                current_max_dense_units = max(min_units_dense, max_units_dense)
+                dense_units_list.append(hp.Int(f'dense_units_{i+1}', min_value=min_units_dense, max_value=current_max_dense_units, step=step_units_dense))
+
             dropout_rate_dense = hp.Float('dropout_rate_dense', min_value=0.0, max_value=0.5, step=0.1)
-            activation_dense = hp.Choice('activation_dense', values=['relu', 'tanh'])
-        else: # Use instance attributes
+            activation_dense = hp.Choice('activation_dense', values=['relu', 'tanh', 'elu', 'swish'])
+
+        else: # Use instance attributes (from self.model_params or their defaults)
+            learning_rate = self.learning_rate
             num_lstm_layers = self.num_lstm_layers
-            lstm_units_1 = self.lstm_units_1
-            lstm_units_2 = self.lstm_units_2
+            lstm_units_list = [self.lstm_units_1]
+            if num_lstm_layers > 1: lstm_units_list.append(self.model_params.get('lstm_units_2', 64))
+            if num_lstm_layers > 2: lstm_units_list.append(self.model_params.get('lstm_units_3', 32))
+            if num_lstm_layers > 3: lstm_units_list.append(self.model_params.get('lstm_units_4', 32))
+
+            dropout_rate_lstm = self.dropout_rate_lstm
 
             num_dense_layers = self.num_dense_layers
-            dense_units_1 = self.dense_units_1
-            # dense_units_2 is not defined here by default, only if num_dense_layers > 1
+            dense_units_list = [self.dense_units_1]
+            if num_dense_layers > 1: dense_units_list.append(self.model_params.get('dense_units_2', 32))
+            if num_dense_layers > 2: dense_units_list.append(self.model_params.get('dense_units_3', 16))
 
-            learning_rate = self.learning_rate
-            dropout_rate_lstm = self.dropout_rate_lstm
             dropout_rate_dense = self.dropout_rate_dense
             activation_dense = self.activation_dense
 
@@ -70,32 +87,24 @@ class StandardLSTMModel:
         x = inputs
 
         # LSTM layers
-        if num_lstm_layers == 1:
-            x = LSTM(units=lstm_units_1,
-                     return_sequences=False, # False if it's the last LSTM layer before Dense
-                     dropout=dropout_rate_lstm,
-                     recurrent_dropout=dropout_rate_lstm)(x)
-        else: # num_lstm_layers == 2
-            x = LSTM(units=lstm_units_1,
-                     return_sequences=True, # True because another LSTM layer follows
-                     dropout=dropout_rate_lstm,
-                     recurrent_dropout=dropout_rate_lstm)(x)
-            x = LSTM(units=lstm_units_2, # lstm_units_2 is defined if num_lstm_layers > 1 from hp or model_params
-                     return_sequences=False, # False as it's the last LSTM layer
+        for i in range(num_lstm_layers):
+            # For Standard LSTM: only the last LSTM layer should have return_sequences=False
+            # All preceding LSTM layers must have return_sequences=True if stacked.
+            return_seq = True if i < (num_lstm_layers - 1) else False
+            current_lstm_units = lstm_units_list[i] if i < len(lstm_units_list) else lstm_units_list[-1]
+
+            x = LSTM(units=current_lstm_units,
+                     return_sequences=return_seq,
                      dropout=dropout_rate_lstm,
                      recurrent_dropout=dropout_rate_lstm)(x)
 
         # Dense layers for prediction
-        x = Dense(units=dense_units_1, activation=activation_dense)(x)
-        x = Dropout(dropout_rate_dense)(x)
-
-        if num_dense_layers > 1: # Second dense layer if specified
-            dense_units_2_val = hp.Int('dense_units_2', min_value=16, max_value=64, step=16) if hp else self.model_params.get('dense_units_2', 16)
-            x = Dense(units=dense_units_2_val, activation=activation_dense)(x)
+        for i in range(num_dense_layers):
+            current_dense_units = dense_units_list[i] if i < len(dense_units_list) else dense_units_list[-1]
+            x = Dense(units=current_dense_units, activation=activation_dense)(x)
             x = Dropout(dropout_rate_dense)(x)
 
-
-        outputs = Dense(1)(x) # Output a single value
+        outputs = Dense(1, name="output_layer")(x) # Output a single value
 
         model = Model(inputs=inputs, outputs=outputs)
         model.compile(optimizer=Adam(learning_rate=learning_rate), loss="mse")
